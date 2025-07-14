@@ -1,107 +1,140 @@
-# Lab Test Extractor
+# Lab Report Extractor
 
-A FastAPI-based service that extracts lab test results from medical document images using OCR and intelligent parsing.
+An AI-powered system for extracting structured lab test data from medical reports using YOLO object detection and OCR.
 
-## Features
+## Recent Improvements
 
-- **OCR Processing**: Uses PaddleOCR to extract text from medical document images
-- **Intelligent Parsing**: Identifies lab test names, values, units, and reference ranges
-- **Out-of-Range Detection**: Automatically flags tests that are outside normal ranges
-- **RESTful API**: Simple HTTP endpoints for easy integration
+### Fixed Inconsistency Issues
 
-## Setup
+The main issue causing inconsistent results was in the API pipeline logic. The previous approach had several problems:
 
-1. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+1. **Misaligned Bounding Box Processing**: YOLO detected individual bounding boxes for different field types (Test_Name, Test_Value, etc.), but the text extraction and merging logic wasn't properly handling the spatial relationships between these detections.
 
-2. **Run the Server**:
-   ```bash
-   python run_server.py
-   ```
-   
-   Or alternatively:
-   ```bash
-   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-   ```
+2. **Poor Row Grouping**: The original code tried to merge fields by index position, which failed when YOLO detections didn't align perfectly with the actual text layout.
 
-3. **Access the API**:
-   - Server will be available at: `http://localhost:8000`
-   - Health check: `http://localhost:8000/health`
-   - API documentation: `http://localhost:8000/docs`
+3. **Inadequate Fallback**: When structured parsing failed, there was no robust fallback mechanism.
 
-## API Usage
+### New Approach
 
-### Extract Lab Tests from Image
+The improved pipeline now:
 
-**Endpoint**: `POST /get-lab-tests`
+1. **Groups detections by Y-coordinate** to identify rows properly
+2. **Uses multiple parsing strategies** for each row:
+   - Reconstructs full row text and parses it
+   - Maps individual detections to specific fields
+   - Uses OCR utils parser as backup
+3. **Provides detailed debugging** to understand extraction issues
+4. **Implements robust fallback** when structured parsing fails
 
-**Request**: Upload an image file (PNG, JPG, JPEG, TIFF, BMP)
+## API Endpoints
 
-**Response**:
+### POST /predict
+Extract lab test data from an uploaded image.
+
+**Response format:**
 ```json
-{
-  "filename": "lab_report.png",
-  "data": [
-    {
-      "test_name": "Hemoglobin",
-      "test_value": "14.2",
-      "test_unit": "g/dL",
-      "bio_reference_range": "12.0-16.0",
-      "lab_test_out_of_range": false
-    }
-  ],
-  "total_tests_found": 1
-}
+[
+  {
+    "test_name": "Hemoglobin",
+    "test_value": "15.3",
+    "bio_reference_range": "11.1-14.4",
+    "test_unit": "g/dl",
+    "lab_test_out_of_range": true
+  }
+]
 ```
 
-### Health Check
+### POST /debug-extract
+Debug endpoint that returns detailed information about the extraction process.
 
-**Endpoint**: `GET /health`
+**Response includes:**
+- Total number of detections
+- Individual detection details (text, confidence, bounding box)
+- Row grouping information
+- Parsing attempts for each row
+- Fallback results
 
-**Response**:
-```json
-{
-  "status": "healthy",
-  "message": "Lab test extractor is running"
-}
+## Usage
+
+### Starting the Server
+
+```bash
+python run_server.py
 ```
 
-## Error Handling
+The server will start on `http://localhost:8000`
 
-The API includes comprehensive error handling:
+### Testing with Debug Script
 
-- **400 Bad Request**: Invalid file type or format
-- **500 Internal Server Error**: OCR processing or parsing errors
-- **Graceful degradation**: Returns empty results if no text can be extracted
+Use the debug script to understand extraction issues:
+
+```bash
+python test_debug_extraction.py path/to/lab_report.jpg
+```
+
+This will show:
+- Regular extraction results
+- Detailed debugging information
+- Individual detection details
+- Row grouping and parsing attempts
+
+### API Documentation
+
+Visit `http://localhost:8000/docs` for interactive API documentation.
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **PaddleOCR compilation warning**: This is normal and doesn't affect functionality
-2. **"tuple index out of range"**: Fixed in recent updates - ensure you're using the latest code
-3. **Server crashes**: Check that all dependencies are installed correctly
+1. **Inconsistent Results**: Use the debug endpoint to see what text is being extracted from each bounding box
+2. **Missing Fields**: Check if YOLO is detecting all required field types
+3. **Wrong Text Extraction**: Verify OCR is working correctly on individual crops
 
-### Performance Tips
+### Debugging Steps
 
-- Use high-quality images for better OCR results
-- Ensure images are properly oriented
-- For large documents, consider preprocessing to improve text clarity
+1. **Use the debug endpoint**:
+   ```bash
+   curl -X POST "http://localhost:8000/debug-extract" \
+        -H "accept: application/json" \
+        -H "Content-Type: multipart/form-data" \
+        -F "file=@your_lab_report.jpg"
+   ```
 
-## Development
+2. **Check detection quality**: Look at the confidence scores and bounding boxes
+3. **Verify text extraction**: Ensure OCR is reading text correctly from each crop
+4. **Review row grouping**: Make sure detections are being grouped into rows properly
 
-The project structure:
+### Improving Results
+
+1. **Retrain YOLO model** with more diverse lab report formats
+2. **Adjust Y-coordinate tolerance** in `group_detections_by_rows()` function
+3. **Enhance OCR preprocessing** for better text recognition
+4. **Add more parsing patterns** to handle different lab report formats
+
+## File Structure
+
 ```
 lab extractor/
 ├── app/
-│   ├── main.py          # FastAPI application
-│   ├── ocr_utils.py     # OCR processing utilities
-│   ├── parser.py        # Lab test parsing logic
-│   └── test_terms.csv   # Database of lab test names
-├── temp_uploads/        # Temporary file storage
-├── run_server.py        # Server startup script
-├── requirements.txt     # Python dependencies
-└── README.md           # This file
-``` 
+│   ├── api_pipeline.py      # Main API with improved extraction logic
+│   ├── ocr_utils.py         # OCR utilities with enhanced error handling
+│   ├── parser.py            # Medical document parser
+│   └── main.py              # FastAPI app entry point
+├── test_debug_extraction.py # Debug testing script
+├── run_server.py            # Server startup script
+└── README.md               # This file
+```
+
+## Dependencies
+
+- FastAPI
+- OpenCV
+- EasyOCR
+- Ultralytics (YOLO)
+- NumPy
+- Uvicorn
+
+Install with:
+```bash
+pip install -r requirements.txt
+```

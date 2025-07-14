@@ -1,302 +1,589 @@
-# app/parser.py
-
 import re
-import pandas as pd
-from difflib import get_close_matches
-from rapidfuzz import process, fuzz
+from rapidfuzz import fuzz
+import logging
+from typing import Tuple, Optional, List, Dict, Any
+from dataclasses import dataclass
 
-# Load lab test names from CSV
-def load_test_terms(filepath="app/test_terms.csv"):
-    df = pd.read_csv(filepath)
-    return set(df["test_name"].dropna().str.strip().str.lower())
+@dataclass
+class TestResult:
+    """Structured representation of a lab test result."""
+    test_name: str
+    value: str
+    unit: Optional[str] = None
+    reference_range: Optional[str] = None
+    flag: Optional[str] = None
+    confidence: float = 0.0
+    raw_text: str = ""
 
-test_terms_set = load_test_terms()
+class MedicalDocumentParser:
+    """Enhanced parser for various types of medical documents."""
+    
+    def __init__(self):
+        self.common_units = {
+            'mg/dl', 'g/dl', 'mmol/l', 'iu/ml', 'ng/ml', 'pg/ml', 'mcg/ml',
+            'fl', 'pg', 'fmol/l', 'pmol/l', 'cells/ul', 'cells/mm3',
+            'thousand/ul', 'million/ul', '%', 'ratio', 'index', 'score',
+            'bpm', 'mmhg', 'cm', 'kg', 'lbs', 'celsius', 'fahrenheit',
+            'copies/ml', 'log copies/ml', 'mu/ml', 'u/ml', 'ku/l', 'u/l',
+            'mill/cmm', 'mill/cu.mm', '/ul', 'g/dl', 'mg/l', 'gm/dl',
+            'iul', 'lu1', 'lul', '/l', 'mil/cumm', 'mill/cumm',
+            'gldl', 'g/l', 'mg/dl', 'ng/dl', 'pg/dl',
+            'fl', 'pg', 'g/dl', '/ul', '/mm3', '/cumm'
+        }
+        
+        # Unit standardization map
+        self.unit_standardization = {
+            'gm/dl': 'g/dl',
+            'gldl': 'g/dl',
+            'g/l': 'g/dl',
+            'mill/cmm': 'million/cmm',
+            'mill/cu.mm': 'million/cmm',
+            'mil/cumm': 'million/cumm',
+            'mill/cumm': 'million/cumm',
+            'iul': '/ul',
+            'lu1': '/ul',
+            'lul': '/ul',
+            'ul': '/ul',
+            '/cumm': '/mm3'
+        }
+        
+        self.test_categories = {
+            'hematology': [
+                'hemoglobin', 'hb', 'hematocrit', 'hct', 'rbc', 'wbc', 
+                'platelet', 'plt', 'mcv', 'mch', 'mchc', 'rdw', 
+                'neutrophil', 'lymphocyte', 'monocyte', 'eosinophil', 
+                'basophil', 'mpv', 'complete blood count', 'cbc'
+            ],
+            'chemistry': [
+                'glucose', 'creatinine', 'urea', 'bun', 'sodium', 'na', 
+                'potassium', 'k', 'chloride', 'cl', 'calcium', 'ca',
+                'phosphorus', 'magnesium', 'albumin', 'total protein',
+                'globulin', 'a/g ratio'
+            ],
+            'lipid': [
+                'cholesterol', 'triglycerides', 'hdl', 'ldl', 'vldl',
+                'total lipids', 'lipid profile'
+            ],
+            'liver': [
+                'alt', 'ast', 'alp', 'ggt', 'bilirubin', 'total bilirubin',
+                'direct bilirubin', 'indirect bilirubin', 'sgpt', 'sgot'
+            ],
+            'thyroid': [
+                'tsh', 't3', 't4', 'ft3', 'ft4', 'thyroid', 
+                'thyroid stimulating hormone'
+            ],
+            'cardiac': [
+                'troponin', 'ck-mb', 'ck', 'cpk', 'ldh', 'bnp', 
+                'nt-probnp', 'cardiac'
+            ],
+            'diabetes': [
+                'hba1c', 'glucose', 'blood sugar', 'fbs', 'ppbs', 
+                'random blood sugar', 'insulin'
+            ],
+            'inflammatory': [
+                'esr', 'crp', 'procalcitonin', 'sed rate', 
+                'erythrocyte sedimentation rate'
+            ],
+            'coagulation': [
+                'pt', 'ptt', 'inr', 'fibrinogen', 'd-dimer', 'bleeding time',
+                'clotting time', 'aptt'
+            ]
+        }
 
-def normalize_unit(unit):
-    """Normalize unit strings to standard format"""
-    if not unit:
+        # Add more test patterns
+        self.test_patterns = [
+            'COMPLETE BLOOD COUNT', 'CBC',
+            'HEMOGLOBIN', 'HB',
+            'RBC COUNT', 'RED BLOOD CELL',
+            'HEMATOCRIT', 'HCT', 'PCV',
+            'MCV', 'MEAN CORPUSCULAR VOLUME',
+            'MCH', 'MEAN CORPUSCULAR HEMOGLOBIN',
+            'MCHC', 'MEAN CORPUSCULAR HEMOGLOBIN CONCENTRATION',
+            'RDW', 'RED CELL DISTRIBUTION WIDTH',
+            'WBC COUNT', 'WHITE BLOOD CELL',
+            'DIFFERENTIAL COUNT', 'DIFF COUNT',
+            'NEUTROPHILS', 'NEUT',
+            'LYMPHOCYTES', 'LYMP',
+            'EOSINOPHILS', 'EOS',
+            'MONOCYTES', 'MONO',
+            'BASOPHILS', 'BASO',
+            'PLATELETS', 'PLT',
+            'MPV', 'MEAN PLATELET VOLUME',
+            'SERUM', 'BLOOD',
+            'BLOOD UREA', 'UREA',
+            'CREATININE', 'CREA',
+            'URIC ACID',
+            'SODIUM', 'NA',
+            'POTASSIUM', 'K',
+            'CALCIUM', 'CA',
+            'PHOSPHORUS', 'PHOS',
+            'PROTEIN', 'TOTAL PROTEIN',
+            'ALBUMIN', 'ALB',
+            'GLOBULIN', 'GLOB'
+        ]
+        
+    def clean_ocr_text(self, text: str) -> str:
+        """Enhanced OCR error correction with medical-specific rules."""
+        logging.info(f"[RAW OCR] {text}")
+        if not text:
+            return ""
+        
+        # Remove common OCR noise
+        text = re.sub(r'[|}«»{}()\[\]]+', '', text)
+        text = re.sub(r'[|:;]+', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Medical-specific OCR corrections
+        ocr_corrections = {
+            # Common character misreads
+            r'(?<!\d)0(?=\s|$)': 'O',  # 0 to O at word boundaries
+            r'(?<!\d)S(?=\s|\d)': '5',  # S to 5 before digits
+            r'(?<!\d)I(?=\s|\d)': '1',  # I to 1 before digits
+            r'(?<!\d)l(?=\s|\d)': '1',  # l to 1 before digits
+            r'(?<=\d)O(?=\s|$)': '0',   # O to 0 after digits
+            r'(?<=\d)o(?=\s|$)': '0',   # o to 0 after digits
+            
+            # Medical term corrections
+            r'\bHaemoglobin\b': 'Hemoglobin',
+            r'\bHaematocrit\b': 'Hematocrit',
+            r'\bR\.B\.C\b': 'RBC',
+            r'\bW\.B\.C\b': 'WBC',
+            r'\bmillcmm\b': 'mill/cmm',
+            r'\bmicro\s*gram\b': 'mcg',
+            r'\bmicro\s*liter\b': 'mcl',
+            
+            # Unit corrections
+            r'\bmg\s*%\s*dl\b': 'mg/dl',
+            r'\bg\s*%\s*dl\b': 'g/dl',
+            r'\bmmol\s*l\b': 'mmol/l',
+            r'\biu\s*ml\b': 'iu/ml',
+            r'\bng\s*ml\b': 'ng/ml',
+            r'\bpg\s*ml\b': 'pg/ml',
+            r'\bmcg\s*ml\b': 'mcg/ml',
+            r'\bcells\s*ul\b': 'cells/ul',
+            r'\bthousand\s*ul\b': 'thousand/ul',
+            r'\bmillion\s*ul\b': 'million/ul',
+            
+            # Range separators
+            r'\s*-\s*': '-',
+            r'\s*–\s*': '-',
+            r'\s*—\s*': '-',
+            r'\s*to\s*': '-',
+        }
+        
+        for pattern, replacement in ocr_corrections.items():
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+        
+        # Fix spacing around numbers and units
+        text = re.sub(r'(\d)\s+([a-zA-Z/%])', r'\1 \2', text)
+        text = re.sub(r'([a-zA-Z])\s+(\d)', r'\1 \2', text)
+        
+        return text.strip()
+
+    def extract_test_data_from_line(self, line: str) -> Optional[TestResult]:
+        """Enhanced pattern matching for various medical test formats."""
+        line = self.clean_ocr_text(line.strip())
+
+        if not line or len(line) < 5:
+            return None
+
+        # Common test result patterns in lab reports
+        patterns = [
+            # Standard format: Test Name | Value [Flag] Unit | Range
+            r'([A-Za-z][\w\s\-\(\)\/,.]+?)\s+([\d\.]+)\s*\[?([HLhl\*]?)\]?\s*([\w/%\.]+)?\s*([\d\.-]+\s*-\s*[\d\.]+)?',
+            
+            # Format with range at end: Test Name | Value Unit | Range
+            r'([A-Za-z][\w\s\-\(\)\/,.]+?)\s+([\d\.]+)\s*([\w/%\.]+)?\s+([\d\.-]+\s*-\s*[\d\.]+)',
+            
+            # Format with flag after value: Test Name | Value Flag Unit
+            r'([A-Za-z][\w\s\-\(\)\/,.]+?)\s+([\d\.]+)\s*([HLhl\*])\s*([\w/%\.]+)',
+            
+            # Simple format: Test Name | Value Unit
+            r'([A-Za-z][\w\s\-\(\)\/,.]+?)\s+([\d\.]+)\s*([\w/%\.]+)',
+        ]
+
+        for pattern in patterns:
+            match = re.match(pattern, line)
+            if match:
+                groups = match.groups()
+                test_name = self.clean_test_name(groups[0])
+                
+                # Extract core components
+                value = groups[1]
+                
+                # Handle different pattern formats
+                if len(groups) >= 4:
+                    flag = groups[2] if groups[2] in 'HLhl*' else ''
+                    unit = groups[2] if not flag else groups[3]
+                    ref_range = groups[4] if len(groups) > 4 else None
+                else:
+                    flag = ''
+                    unit = groups[2] if len(groups) > 2 else None
+                    ref_range = None
+                
+                # Clean up unit
+                if unit:
+                    unit = unit.strip().lower()
+                    # Standardize common unit variations
+                    unit_replacements = {
+                        'gm/dl': 'g/dl',
+                        'gm/dl': 'g/dl',
+                        'mill/cmm': 'million/cmm',
+                        'mill/cu.mm': 'million/cmm',
+                        'iul': '/ul',
+                        'lu1': '/ul',
+                        'ul': '/ul',
+                    }
+                    unit = unit_replacements.get(unit, unit)
+                
+                # Calculate confidence
+                confidence = self.calculate_confidence(test_name, value, unit, ref_range, flag)
+                
+                if self.is_valid_test_name(test_name):
+                    return TestResult(
+                        test_name=test_name,
+                        value=value,
+                        unit=unit,
+                        reference_range=ref_range,
+                        flag=flag,
+                        confidence=confidence,
+                        raw_text=line
+                    )
         return None
-    unit = unit.lower().strip()
-    corrections = {
-        "mmoll": "mmol/L",
-        "mgldl": "mg/dL", 
-        "mgidl": "mg/dL",
-        "mg/l": "mg/L",
-        "mgl": "mg/L",
-        "mgdl": "mg/dL",
-        "gdl": "g/dL",
-        "g/l": "g/L",
-        "umoll": "μmol/L",
-        "umol/l": "μmol/L",
-        "ngml": "ng/mL",
-        "ng/ml": "ng/mL",
-        "pgml": "pg/mL",
-        "pg/ml": "pg/mL",
-        "iul": "IU/L",
-        "iu/l": "IU/L",
-        "ul": "μL",
-        "u/l": "U/L",
-        "ul": "U/L",
-        "g/di": "g/dL",
-        "mg/di": "mg/dL",
-        "umol/i": "μmol/L",
-        "iu/i": "IU/L"
-    }
-    return corrections.get(unit, unit)
 
-def clean_ocr_text(text):
-    """Enhanced OCR error correction"""
-    # Comprehensive corrections for common OCR errors
-    corrections = {
-        '1.0.11.0': '4.0-11.0',
-        '13.0.17 0': '13.0-17.0',
-        '82.102': '82-102',
-        '4.0.5.5': '4.0-5.5',
-        'tI': 'fl',
-        'mll,n': 'million',
-        '10°3umm': '10^3/cumm',
-        'p.m': 'picogram',
-        '31.5.3.4 5': '31.5-34.5',
-        '11.5.145': '11.5-14.5',
-        # Additional common OCR errors
-        'rn': 'm',
-        'cl': 'd', 
-        'ii': 'll',
-        'g/dI': 'g/dL',
-        'mg/dI': 'mg/dL',
-        'umol/I': 'μmol/L',
-        'IU/I': 'IU/L',
-        'hul': 'μL',
-        'lotallehoteouut': 'total leukocyte',
-        'RB((outRl Blol': 'RBC count',
-        'P(VHacmatorin': 'hematocrit',
-        'Men Corpuscull.r': 'mean corpuscular',
-        'VolumeM': 'volume',
-        'Mean corpenlar': 'mean corpuscular',
-        'hemoglobinMH': 'hemoglobin',
-        'Me:n corpeulr': 'mean corpuscular',
-        'hemnglobn': 'hemoglobin',
-        'ntatjon MH': 'concentration',
-        'Red cell dtriburion': 'red cell distribution',
-        'Wdh-(\"(RDW)': 'width (RDW)',
-        'Platekt distributio': 'platelet distribution',
-        'WdthPDM': 'width PDW',
-        'Ve.n platelet': 'mean platelet',
-        'volume(MPV,': 'volume (MPV)',
-        'Dillerenil uo te cnD': 'differential count',
-        'Veunophils': 'neutrophils',
-        # New corrections for the noisy OCR
-        '|} 725 PSGAR SUPER: SPECIALITY HOSPITAL 2s.': '',
-        '(2) Pore enn agneae AG': '',
-        '«| {i Opp..Givil\' Hospital, Sonipat:|:Mobs7> OE': '',
-        'Patiepr Name, si iMRS.POOIA {| Bate': '',
-        '«Hl! SERUM BILIRUBIN Ce a |i': 'SERUM BILIRUBIN',
-        '| INDIRECT BILIRUBIN': 'INDIRECT BILIRUBIN',
-        'SERUM BILIRUBIN Ce a': 'SERUM BILIRUBIN',
-        'INDIRECT BILIRUBIN': 'INDIRECT BILIRUBIN',
-        'BILIRUBIN Ce a': 'BILIRUBIN',
-        'BILIRUBIN': 'bilirubin'
-    }
-    
-    for wrong, correct in corrections.items():
-        text = text.replace(wrong, correct)
-    
-    # Remove common OCR noise characters
-    text = re.sub(r'[|}«»{}()\[\]]', '', text)  # Remove brackets and special chars
-    text = re.sub(r'[|:;]', ' ', text)  # Replace pipes and colons with spaces
-    text = re.sub(r'\s+', ' ', text)  # Normalize multiple spaces
-    
-    # Context-aware replacements (only in non-numeric contexts)
-    text = re.sub(r'(?<!\d)0(?!\d)', 'o', text)  # Only replace '0' with 'o' when not surrounded by digits
-    text = re.sub(r'(?<!\d)S(?!\d)', '5', text)  # Only replace 'S' with '5' when not surrounded by digits
-    text = re.sub(r'(?<!\d)I(?!\d)', '1', text)  # Only replace 'I' with '1' when not surrounded by digits
-    
-    # Fix spacing issues around numbers and units
-    text = re.sub(r'(\d)\s+([a-zA-Z])', r'\1 \2', text)  # Ensure space between number and unit
-    text = re.sub(r'([a-zA-Z])\s+(\d)', r'\1 \2', text)  # Ensure space between letter and number
-    
-    return text.strip()
-
-def preprocess_name(name):
-    """Normalize test name for matching"""
-    return re.sub(r'[^a-zA-Z0-9 ]', '', name).lower().strip()
-
-def is_likely_test_name(name):
-    """Check if a string is likely to be a test name"""
-    skip_phrases = [
-        'result date', 'parameters', 'test result', 'admitted under',
-        'patient', 'bed no', 'ward', 'dr', 'report date', 'order no',
-        'sample collected', 'validated by', 'approved by', 'page',
-        'uhid', 'ip', 'final', 'investigation', 'laboratory', 'comprehensive',
-        'panel', 'results', 'date', 'report', 'hospital', 'mims'
-    ]
-    name_lower = name.lower()
-    return not any(phrase in name_lower for phrase in skip_phrases)
-
-def find_best_test_match(candidate, threshold=0.4):
-    """Find the best matching test name from the database"""
-    if not candidate or len(candidate.strip()) < 2:
-        return None
-    
-    candidate_clean = preprocess_name(candidate)
-    
-    # Direct match
-    if candidate_clean in test_terms_set:
-        return candidate_clean
-    
-    # Fuzzy match with lower threshold for noisy OCR
-    close_matches = get_close_matches(candidate_clean, test_terms_set, n=1, cutoff=threshold)
-    if close_matches:
-        return close_matches[0]
-    
-    # Use rapidfuzz for more sophisticated matching
-    if len(candidate_clean) > 3:
-        match, score, _ = process.extractOne(candidate_clean, test_terms_set, scorer=fuzz.token_set_ratio)
-        if score > 50:  # Even lower threshold for very noisy OCR
-            return match
-    
-    return None
-
-def extract_test_data_from_line(line):
-    """Enhanced pattern matching for lab test data"""
-    line = clean_ocr_text(line.strip())
-    
-    # More comprehensive patterns
-    patterns = [
-        # Pattern with flags (H/L indicators)
-        r'^([A-Za-z\s()\-/]+?)\s+([<>]?\d+\.?\d*)\s*([HL])?\s+([a-zA-Z^°/*%μ/]+)\s+([<>]?\d+\.?\d*\s*[-–]\s*[<>]?\d+\.?\d*)',
-        
-        # Standard pattern with units and ranges
-        r'^([A-Za-z\s()\-/]+?)\s+([<>]?\d+\.?\d*)\s+([a-zA-Z^°/*%μ/]+)\s+([<>]?\d+\.?\d*\s*[-–]\s*[<>]?\d+\.?\d*)',
-        
-        # Pattern with parenthetical ranges
-        r'^([A-Za-z\s()\-/]+?):\s*([<>]?\d+\.?\d*)\s+([a-zA-Z^°/*%μ/]+)\s*\(([^)]+)\)',
-        
-        # Simple value with unit
-        r'^([A-Za-z\s()\-/]+?)\s+([<>]?\d+\.?\d*)\s+([a-zA-Z^°/*%μ/]+)(?:\s|$)',
-        
-        # Just test name and value
-        r'^([A-Za-z\s()\-/]+?)\s+([<>]?\d+\.?\d*)(?:\s|$)',
-        
-        # Handle decimal values better
-        r'^([A-Za-z\s()\-/]+?)\s+(\d+\.\d+|\d+)\s*([a-zA-Z^°/*%μ/]*)\s*([<>]?\d+\.?\d*\s*[-–]\s*[<>]?\d+\.?\d*)?'
-    ]
-    
-    for i, pattern in enumerate(patterns):
-        match = re.match(pattern, line, re.IGNORECASE)
-        if match:
-            groups = match.groups()
-            test_name = groups[0].strip()
-            value = groups[1]
+    def clean_test_name(self, name: str) -> str:
+        """Clean and normalize test names."""
+        if not name:
+            return name
             
-            # Handle different group arrangements based on pattern
-            if i == 0:  # Pattern with flag
-                flag = groups[2] if groups[2] else ""
-                unit = groups[3] if len(groups) > 3 else None
-                ref_range = groups[4] if len(groups) > 4 else None
-            else:
-                flag = ""
-                unit = groups[2] if len(groups) > 2 and groups[2] else None
-                ref_range = groups[3] if len(groups) > 3 and groups[3] else None
-            
-            # Clean up reference range
-            if ref_range:
-                ref_range = re.sub(r'\s+', '', ref_range)
-            
-            return test_name, value, unit, ref_range, flag
-    
-    return None, None, None, None, None
-
-def determine_flag(value, ref_range):
-    """Determine if value is high (H) or low (L) based on reference range"""
-    if not value or not ref_range:
-        return ""
-    
-    try:
-        # Handle values with > or <
-        if value.startswith('>') or value.startswith('<'):
-            return "H" if value.startswith('>') else "L"
+        name = name.strip()
         
-        val_num = float(value)
-        range_parts = ref_range.split('-')
-        if len(range_parts) == 2:
-            low, high = float(range_parts[0]), float(range_parts[1])
-            if val_num > high:
+        # Remove common prefixes/suffixes
+        name = re.sub(r'^(test|result|level)[\s:]+', '', name, flags=re.IGNORECASE)
+        name = re.sub(r'[\s:]+$', '', name)
+        
+        # Clean up common OCR errors
+        name = name.replace('1', 'l')  # Replace mistaken 1's with l's
+        name = re.sub(r'[-\s]+ta[l1]$', '', name)  # Remove -tal suffix from OCR errors
+        
+        # Remove artifacts
+        name = re.sub(r'\{#\}', '', name)  # Remove {#}
+        name = re.sub(r'\([^)]*\)$', '', name)  # Remove trailing parentheses
+        name = re.sub(r'[\s:]+$', '', name)  # Remove trailing colons and spaces
+        
+        # Handle common variations and abbreviations
+        replacements = {
+            'hb': 'Hemoglobin',
+            'haemoglobin': 'Hemoglobin',
+            'wbc': 'White Blood Cell',
+            'rbc': 'Red Blood Cell',
+            'r.b.c.': 'Red Blood Cell',
+            'w.b.c.': 'White Blood Cell',
+            'plt': 'Platelet',
+            'mcv': 'Mean Corpuscular Volume',
+            'mc.v': 'Mean Corpuscular Volume',
+            'mch': 'Mean Corpuscular Hemoglobin',
+            'mc.h': 'Mean Corpuscular Hemoglobin',
+            'mchc': 'Mean Corpuscular Hemoglobin Concentration',
+            'mc.h.c': 'Mean Corpuscular Hemoglobin Concentration',
+            'rdw': 'Red Cell Distribution Width',
+            'r.d.w': 'Red Cell Distribution Width',
+            'mpv': 'Mean Platelet Volume',
+            'hct': 'Hematocrit',
+            'haematocrit': 'Hematocrit',
+            'pcv': 'Hematocrit',
+            'neut': 'Neutrophils',
+            'lymph': 'Lymphocytes',
+            'mono': 'Monocytes',
+            'eos': 'Eosinophils',
+            'baso': 'Basophils',
+            'differential count': 'Differential Count',
+            'absolute count': 'Absolute Count'
+        }
+        
+        # Try exact match first
+        name_lower = name.lower()
+        if name_lower in replacements:
+            return replacements[name_lower]
+            
+        # Try partial matches
+        for abbr, full in replacements.items():
+            if re.search(rf'\b{re.escape(abbr)}\b', name_lower):
+                return full
+        
+        # Clean up the name
+        name = re.sub(r'\s*\([^)]*\)\s*$', '', name)  # Remove parenthetical at end
+        name = re.sub(r'\s*#\s*$', '', name)  # Remove trailing #
+        name = re.sub(r'\s+', ' ', name)  # Normalize spaces
+        name = name.strip()
+        
+        # Special case for "Total X Count"
+        if re.match(r'^total\s+.*\s+count$', name_lower):
+            return name.title()
+        
+        return name
+
+    def determine_flag(self, value: str, ref_range: str) -> str:
+        """Enhanced flag determination with better error handling."""
+        if not value or not ref_range:
+            return ""
+        try:
+            # Handle comparison operators in value
+            if value.startswith('>') or value.startswith('≥'):
                 return "H"
-            elif val_num < low:
+            elif value.startswith('<') or value.startswith('≤'):
                 return "L"
-    except:
-        pass
-    
-    return ""
 
-def parse_lab_tests(ocr_text):
-    """Main function to parse lab test results from OCR text - sliding window for noisy OCR"""
-    lines = [clean_ocr_text(line.strip()) for line in ocr_text.split("\n") if line.strip()]
-    results = []
-    i = 0
-    n = len(lines)
-    
-    while i < n:
-        # Try to group up to 3 lines as a test block
-        window = lines[i:i+3]
-        # Try all possible concatenations of 1, 2, or 3 lines
-        candidates = [window[0]]
-        if len(window) > 1:
-            candidates.append(window[0] + " " + window[1])
-        if len(window) > 2:
-            candidates.append(window[0] + " " + window[1] + " " + window[2])
-        found = False
-        for candidate in candidates:
-            test_name, value, unit, ref_range, flag = extract_test_data_from_line(candidate)
-            if test_name:
-                matched_test = find_best_test_match(test_name)
-                if matched_test:
-                    # Use flag from pattern if available, otherwise determine from value/range
-                    if not flag and ref_range:
-                        flag = determine_flag(value, ref_range)
-                    results.append({
-                        'test_name': matched_test,
-                        'flag': flag,
-                        'value': value,
-                        'ref_range': ref_range,
-                        'unit': normalize_unit(unit) if unit else None
-                    })
-                    # Skip lines used in this candidate
-                    used_lines = candidate.count(" ") // 10 + 1  # crude: at least 1, up to 3
-                    i += min(len(window), used_lines)
-                    found = True
-                    break
-        if found:
-            continue
-        # If not found, try to treat line as test name and look for value/unit in next lines
-        line = lines[i]
-        if is_likely_test_name(line):
-            matched_test = find_best_test_match(line)
-            if matched_test:
-                value, unit, ref_range = None, None, None
-                for j in range(1, 3):
-                    if i + j >= n:
-                        break
-                    next_line = lines[i + j]
-                    # Try to extract value/unit from next line
-                    _, val, un, rng, _ = extract_test_data_from_line(next_line)
-                    if val and not value:
-                        value = val
-                    if un and not unit:
-                        unit = un
-                    if rng and not ref_range:
-                        ref_range = rng
-                results.append({
-                    'test_name': matched_test,
-                    'flag': determine_flag(value, ref_range),
-                    'value': value,
-                    'ref_range': ref_range,
-                    'unit': normalize_unit(unit) if unit else None
-                })
-                i += 2
+            # Parse numeric value
+            val_num = float(re.sub(r'[^\d.]', '', value))
+
+            # Parse reference range
+            range_match = re.match(r'([<>≤≥]?\d+\.?\d*)\s*[-–]\s*([<>≤≥]?\d+\.?\d*)', ref_range)
+            if range_match:
+                low_str, high_str = range_match.groups()
+                low = float(re.sub(r'[^\d.]', '', low_str))
+                high = float(re.sub(r'[^\d.]', '', high_str))
+
+                if val_num > high:
+                    return "H"
+                elif val_num < low:
+                    return "L"
+                else:
+                    return "N"  # Normal
+        except (ValueError, AttributeError):
+            pass
+        return ""
+
+    def calculate_confidence(self, test_name: str, value: str, unit: str, ref_range: str, flag: str) -> float:
+        """Calculate confidence score for extracted test result."""
+        confidence = 0.0
+        
+        # Base confidence for having test name and value
+        if test_name and value:
+            confidence += 0.4
+        
+        # Additional confidence for complete data
+        if unit:
+            confidence += 0.2
+        if ref_range:
+            confidence += 0.2
+        if flag:
+            confidence += 0.1
+        
+        # Bonus for recognized test names
+        test_name_lower = test_name.lower()
+        for category, tests in self.test_categories.items():
+            if any(test in test_name_lower for test in tests):
+                confidence += 0.1
+                break
+        
+        return min(confidence, 1.0)
+
+    def is_valid_test_name(self, name: str) -> bool:
+        """Enhanced validation for test names."""
+        name = name.strip()
+        
+        # Basic validation
+        if not name or len(name) < 2:
+            return False
+        
+        # Must contain at least one letter
+        if not re.search(r'[a-zA-Z]', name):
+            return False
+        
+        # Reject if all numbers/symbols
+        if all(char in '0123456789.- /' for char in name):
+            return False
+        
+        # Reject common false positives
+        invalid_patterns = [
+            r'^\d+$',  # Only numbers
+            r'^[.\-\s]+$',  # Only punctuation
+            r'^(ul|ml|dl|l|mg|g|ng|pg|mcg|kg|lbs)$',  # Only units
+            r'^(a|an|the|and|or|of|in|on|at|to|for|with|by)$',  # Articles/prepositions
+            r'^(normal|abnormal|high|low|positive|negative)$',  # Result descriptors
+            r'^(page|report|lab|test|result|value|range|reference)$',  # Document terms
+            r'^(date|time|patient|doctor|physician|hospital|clinic)$',  # Header terms
+        ]
+        
+        name_lower = name.lower()
+        for pattern in invalid_patterns:
+            if re.match(pattern, name_lower):
+                return False
+        
+        # Reject very short common words
+        if len(name) <= 3 and name_lower in {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'man', 'new', 'now', 'old', 'see', 'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use'}:
+            return False
+        
+        return True
+
+    def parse_document(self, text: str) -> List[TestResult]:
+        """Enhanced document parsing with better handling of tabular formats."""
+        if not text:
+            return []
+            
+        # Clean the text first
+        text = self.clean_ocr_text(text)
+        
+        # Split into lines
+        lines = text.split('\n')
+        results = []
+        
+        # Variables to track test information
+        test_names = []
+        test_values = []
+        test_units = []
+        test_flags = []
+        test_ranges = []
+        in_test_section = False
+        current_section = ""
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
                 continue
-        i += 1
-    return results
-
-
+            
+            # Detect section headers
+            if 'COMPLETE BLOOD COUNT' in line.upper():
+                in_test_section = True
+                current_section = 'COMPLETE BLOOD COUNT'
+                continue
+            elif 'DIFFERENTIAL' in line.upper() and 'COUNT' in line.upper():
+                current_section = 'DIFFERENTIAL COUNT'
+                continue
+            elif 'ABSOLUTE' in line.upper() and 'COUNT' in line.upper():
+                current_section = 'ABSOLUTE COUNT'
+                continue
+            
+            if not in_test_section:
+                continue
+            
+            # Check if line contains a test name
+            test_name_match = re.match(r'^(.*?(?:Count|Volume|Width|Hb|Distribution|Haemoglobin|Haematocrit|Neutrophils|Lymphocytes|Eosinophils|Monocytes|Basophils|Platelets|MPV|FRACTION).*?)(?:\s+(\d+\.?\d*)(?:\s*\[([HLhl\*])\])?\s*([\w/%\.]+))?$', line)
+            if test_name_match:
+                name = test_name_match.group(1).strip()
+                value = test_name_match.group(2)
+                flag = test_name_match.group(3)
+                unit = test_name_match.group(4)
+                
+                if value:  # If we have a value on the same line
+                    results.append(TestResult(
+                        test_name=self.clean_test_name(name),
+                        value=value,
+                        unit=unit,
+                        flag=flag if flag else "",
+                        confidence=0.8,  # High confidence for direct matches
+                        raw_text=line
+                    ))
+                else:  # Store the test name for later matching
+                    test_names.append(name)
+            
+            # Check if line contains a value and reference range
+            elif test_names and re.match(r'^\s*[\d\.]+\s*\[?[HLhl\*]?\]?\s*[\w/%\.]+\s*(?:[\d\.-]+\s*-\s*[\d\.]+)?', line):
+                parts = line.split()
+                value = parts[0]
+                flag = ""
+                unit = None
+                ref_range = None
+                
+                # Extract flag if present
+                if len(parts) > 1 and re.match(r'\[[HLhl\*]\]', parts[1]):
+                    flag = parts[1].strip('[]')
+                    parts = parts[0:1] + parts[2:]
+                
+                # Extract unit and reference range
+                if len(parts) > 1:
+                    unit = parts[1]
+                if len(parts) > 2:
+                    ref_range = ' '.join(parts[2:])
+                
+                # Match with the last unmatched test name
+                test_name = test_names.pop(0)
+                results.append(TestResult(
+                    test_name=self.clean_test_name(test_name),
+                    value=value,
+                    unit=unit,
+                    reference_range=ref_range,
+                    flag=flag,
+                    confidence=0.8,  # High confidence for matched pairs
+                    raw_text=line
+                ))
+            
+            # Handle reference ranges on separate lines
+            elif results and re.match(r'^\s*[\d\.-]+\s*-\s*[\d\.]+\s*[\w/%\.]+', line):
+                parts = line.split()
+                if len(parts) >= 2:
+                    range_str = ' '.join(parts[:-1])
+                    unit = parts[-1]
+                    results[-1].reference_range = range_str
+                    if not results[-1].unit:
+                        results[-1].unit = unit
+        
+        return results
+    
+    def process_section(self, section_name: str, lines: List[str]) -> List[TestResult]:
+        """Process a section of related test results."""
+        results = []
+        
+        # Join lines that might be split incorrectly
+        processed_lines = []
+        current_line = ''
+        
+        for line in lines:
+            # If line contains a number and unit, it's likely a complete test result
+            if re.search(r'\d+\.?\d*\s*[a-zA-Z/%]+', line):
+                if current_line:
+                    processed_lines.append(current_line)
+                current_line = line
+            else:
+                current_line = (current_line + ' ' + line).strip()
+        
+        if current_line:
+            processed_lines.append(current_line)
+        
+        # Process each line
+        for line in processed_lines:
+            result = self.extract_test_data_from_line(line)
+            if result:
+                # Add section context if missing
+                if section_name and not any(p.lower() in result.test_name.lower() for p in self.test_patterns):
+                    result.test_name = f"{section_name} {result.test_name}"
+                results.append(result)
+        
+        return results
+    
+    def group_by_category(self, results: List[TestResult]) -> Dict[str, List[TestResult]]:
+        """Group test results by their categories."""
+        categorized = {}
+        
+        for result in results:
+            category = 'other'  # Default category
+            test_name_lower = result.test_name.lower()
+            
+            # Check each category's tests
+            for cat, tests in self.test_categories.items():
+                if any(test.lower() in test_name_lower for test in tests):
+                    category = cat
+                    break
+                    
+            # Special case handling for common test names
+            if any(term in test_name_lower for term in ['blood count', 'cbc', 'complete blood']):
+                category = 'hematology'
+            elif any(term in test_name_lower for term in ['kidney', 'renal', 'kft']):
+                category = 'chemistry'
+            elif any(term in test_name_lower for term in ['liver', 'hepatic', 'lft']):
+                category = 'liver'
+            elif any(term in test_name_lower for term in ['thyroid', 'tsh', 't3', 't4']):
+                category = 'thyroid'
+            elif any(term in test_name_lower for term in ['lipid', 'cholesterol', 'triglyceride']):
+                category = 'lipid'
+            elif any(term in test_name_lower for term in ['sugar', 'glucose', 'hba1c']):
+                category = 'diabetes'
+            
+            # Initialize category if not exists
+            if category not in categorized:
+                categorized[category] = []
+            
+            categorized[category].append(result)
+        
+        return categorized

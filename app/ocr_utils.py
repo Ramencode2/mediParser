@@ -1,280 +1,379 @@
 # app/ocr_utils.py
 import os
 import cv2
-import numpy as np
-from typing import Optional, Tuple, List
-import time
+import easyocr
+import re
+import torch
+from typing import List, Dict, Optional, Any
+import logging
 
-# Try to import PaddleOCR
-try:
-    from paddleocr import PaddleOCR
-    PADDLEOCR_AVAILABLE = True
-    print("[INFO] PaddleOCR is available")
-except ImportError:
-    PADDLEOCR_AVAILABLE = False
-    print("[WARNING] PaddleOCR not available, falling back to Tesseract")
+logger = logging.getLogger(__name__)
 
-# Try to import Tesseract
-try:
-    import pytesseract
-    TESSERACT_AVAILABLE = True
-    print("[INFO] Tesseract is available")
-except ImportError:
-    TESSERACT_AVAILABLE = False
-    print("[WARNING] Tesseract not available")
+# Initialize EasyOCR reader once
+CUDA_AVAILABLE = torch.cuda.is_available()
+reader = easyocr.Reader(['en'], gpu=CUDA_AVAILABLE)
+logger.info(f"Initialized EasyOCR with GPU support: {CUDA_AVAILABLE}")
 
-# Initialize PaddleOCR model
-ocr_model = None
-if PADDLEOCR_AVAILABLE:
+def extract_text_with_easyocr(image_path):
+    """Extract text from an image using EasyOCR with enhanced error handling."""
     try:
-        ocr_model = PaddleOCR(use_angle_cls=True, lang='en')
-        print("[INFO] PaddleOCR model initialized successfully")
+        image = cv2.imread(image_path)
+        if image is None:
+            logger.error(f"Could not read image: {image_path}")
+            return ""
+        
+        # Check if image is too small or empty
+        if image.size == 0 or image.shape[0] < 10 or image.shape[1] < 10:
+            logger.warning(f"Image too small or empty: {image_path}")
+            return ""
+        
+        # Use the global reader instance
+        result = reader.readtext(image, detail=0, paragraph=True)
+        
+        # Log the result for debugging
+        logger.info(f"EasyOCR result for {image_path}: {result}")
+        
+        combined = " ".join(result)
+        return combined.strip()
+        
     except Exception as e:
-        print(f"[ERROR] Failed to initialize PaddleOCR: {e}")
-        PADDLEOCR_AVAILABLE = False
-
-def preprocess_image_for_ocr(image):
-    """Enhanced preprocessing for better OCR results"""
-    # Convert to grayscale if needed
-    if len(image.shape) == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = image
-    
-    # Noise reduction
-    denoised = cv2.fastNlMeansDenoising(gray)
-    
-    # Enhance contrast using CLAHE
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    enhanced = clahe.apply(denoised)
-    
-    # Adaptive thresholding (better than fixed threshold)
-    binary = cv2.adaptiveThreshold(
-        enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY, 11, 2
-    )
-    
-    # Morphological operations to clean up text
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
-    cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    
-    return cv2.cvtColor(cleaned, cv2.COLOR_GRAY2BGR)
-
-def extract_text_multiscale(image_path):
-    """Try OCR at different scales for better results"""
-    image = cv2.imread(image_path, cv2.IMREAD_COLOR)
-    if image is None:
-        print(f"[ERROR] Could not read image: {image_path}")
+        logger.error(f"Error in OCR extraction for {image_path}: {str(e)}")
         return ""
-    
-    results = []
-    scales = [1.0, 1.5, 2.0]  # Try original, 1.5x, and 2x scaling
-    
-    for scale in scales:
-        try:
-            if scale != 1.0:
-                height, width = image.shape[:2]
-                new_height, new_width = int(height * scale), int(width * scale)
-                scaled_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
-            else:
-                scaled_image = image
-            
-            processed_image = preprocess_image_for_ocr(scaled_image)
-            result = ocr_model.predict(processed_image)
-            
-            # Extract text from result
-            text_lines = []
-            for page_result in result:
-                if hasattr(page_result, 'rec_texts'):
-                    text_lines.extend([text.strip() for text in page_result.rec_texts if text.strip()])
-            
-            if text_lines:
-                full_text = "\n".join(text_lines)
-                results.append((scale, full_text, len(text_lines)))
-                print(f"[DEBUG] Scale {scale}: {len(text_lines)} lines extracted")
-                
-        except Exception as e:
-            print(f"[WARNING] Scale {scale} failed: {e}")
-            continue
-    
-    # Return the result with most extracted text
-    if results:
-        best_result = max(results, key=lambda x: x[2])
-        print(f"[INFO] Best OCR result at scale {best_result[0]} with {best_result[2]} lines")
-        return best_result[1]
-    
-    return ""
 
-def extract_text_with_tesseract(image_path):
-    """Extract text using Tesseract OCR"""
-    if not TESSERACT_AVAILABLE:
-        return ""
-    
+def extract_text_with_easyocr_from_crop(image_path, bbox=None):
+    """Extract text from a specific crop of an image."""
     try:
-        # Read and preprocess image
-        image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        image = cv2.imread(image_path)
         if image is None:
             return ""
         
-        processed_image = preprocess_image_for_ocr(image)
-        
-        # Convert back to grayscale for Tesseract
-        gray = cv2.cvtColor(processed_image, cv2.COLOR_BGR2GRAY)
-        
-        # Extract text with Tesseract
-        text = pytesseract.image_to_string(gray, config='--psm 6')
-        return text.strip()
-        
-    except Exception as e:
-        print(f"[ERROR] Tesseract OCR failed: {e}")
-        return ""
-
-def extract_text_simple_fallback(image_path):
-    """Simple fallback OCR method"""
-    try:
-        image = cv2.imread(image_path, cv2.IMREAD_COLOR)
-        if image is None:
-            return ""
-        
-        # Basic preprocessing
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        if TESSERACT_AVAILABLE:
-            return pytesseract.image_to_string(binary, config='--psm 6').strip()
+        if bbox:
+            x1, y1, x2, y2 = bbox
+            crop = image[y1:y2, x1:x2]
         else:
-            return ""
-            
+            crop = image
+        
+        # Save crop temporarily
+        temp_crop_path = f"temp_crop_{os.getpid()}.png"
+        cv2.imwrite(temp_crop_path, crop)
+        
+        # Extract text
+        text = extract_text_with_easyocr(temp_crop_path)
+        
+        # Clean up
+        if os.path.exists(temp_crop_path):
+            os.remove(temp_crop_path)
+        
+        return text
+        
     except Exception as e:
-        print(f"[ERROR] Simple fallback failed: {e}")
+        logger.error(f"Error in crop OCR extraction: {str(e)}")
         return ""
 
-def count_medical_terms(text):
-    """Count likely medical terms to help select best OCR result"""
-    medical_indicators = [
-        'mg/dl', 'g/dl', 'μmol/l', 'iu/l', 'cells', 'count', 'level', 
-        'test', 'normal', 'high', 'low', 'hemoglobin', 'platelet', 
-        'sodium', 'potassium', 'glucose', 'creatinine', 'bilirubin',
-        'wbc', 'rbc', 'hgb', 'hct', 'mcv', 'mch', 'mchc', 'rdw'
+def clean_ocr_text(text):
+    """
+    Enhanced OCR text cleaning with medical-specific corrections.
+    """
+    if not text:
+        return ""
+    
+    # Convert to lowercase for consistency
+    text = text.lower()
+    
+    # Enhanced medical-specific OCR corrections
+    corrections = [
+        # Common OCR character misreads
+        (r"gmldl", "gm/dl"),
+        (r"mgldl", "mg/dl"),
+        (r"mmolll", "mmol/l"),
+        (r"millll", "mmol/l"),
+        (r"milll", "mmol/l"),
+        (r"melhod", "method"),
+        (r"melfiod", "method"),
+        (r"melfiod", "method"),
+        (r"TESL", "TEST"),
+        (r"RETUSERUM", "SERUM"),
+        (r"JRIC", "URIC"),
+        (r"omocresol", "bromocresol"),
+        (r"pholomelric", "photometric"),
+        (r"delermination", "determination"),
+        (r"compensalion", "compensation"),
+        (r"calciilated", "calculated"),
+        (r"calciulated", "calculated"),
+        (r"biuret", "biuret"),
+        (r"meihod", "method"),
+        (r"melliod", "method"),
+        (r"arsenazo", "arsenazo"),
+        (r"molybdale", "molybdate"),
+        (r"endpoint", "endpoint"),
+        (r"enzymalic", "enzymatic"),
+        (r"tbhba", "TBHBA"),
+        (r"glucose", "glucose"),
+        (r"creatinine", "creatinine"),
+        (r"urea", "urea"),
+        (r"sodium", "sodium"),
+        (r"potassium", "potassium"),
+        (r"calcium", "calcium"),
+        (r"phosphorus", "phosphorus"),
+        (r"protein", "protein"),
+        (r"albumin", "albumin"),
+        (r"globulin", "globulin"),
+        
+        # Character corrections
+        (r"\bO\b", "0"),  # Standalone O to 0
+        (r"\bI\b", "1"),  # Standalone I to 1
+        (r"\bl\b", "1"),  # lowercase l to 1
+        (r"(?<=\d)O(?=\s|$)", "0"),  # O to 0 after digits
+        (r"(?<=\d)o(?=\s|$)", "0"),  # o to 0 after digits
+        (r"(?<!\d)S(?=\s|\d)", "5"),  # S to 5 before digits
+        (r"(?<!\d)I(?=\s|\d)", "1"),  # I to 1 before digits
+        
+        # Unit standardizations
+        (r"\bmg\s*%\s*dl\b", "mg/dl"),
+        (r"\bg\s*%\s*dl\b", "g/dl"),
+        (r"\bmmol\s*l\b", "mmol/l"),
+        (r"\biu\s*ml\b", "iu/ml"),
+        (r"\bng\s*ml\b", "ng/ml"),
+        (r"\bpg\s*ml\b", "pg/ml"),
+        (r"\bmcg\s*ml\b", "mcg/ml"),
+        (r"\bcells\s*ul\b", "cells/ul"),
+        (r"\bthousand\s*ul\b", "thousand/ul"),
+        (r"\bmillion\s*ul\b", "million/ul"),
+        
+        # Range separators
+        (r"\s*[-–]\s*", "-"),
+        (r"\s*—\s*", "-"),
+        (r"\s*to\s*", "-"),
+        
+        # Clean up spacing
+        (r"\s+", " "),  # Collapse multiple spaces
+        (r"\s*([:/-])\s*", r"\1"),  # Remove spaces around :/-
+        (r"[^\w\s\./:-]", ""),  # Remove unwanted characters but keep dots, slashes, colons, hyphens
     ]
-    text_lower = text.lower()
-    return sum(1 for term in medical_indicators if term in text_lower)
+    
+    for pattern, repl in corrections:
+        text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
+    
+    # Fix spacing around numbers and units
+    text = re.sub(r'(\d)\s+([a-zA-Z/%])', r'\1 \2', text)
+    text = re.sub(r'([a-zA-Z])\s+(\d)', r'\1 \2', text)
+    
+    # Normalize reference range separators
+    text = re.sub(r'\s*[-–]\s*', '-', text)
+    
+    return text.strip()
 
-def extract_text_from_image(image_path):
-    """Enhanced OCR with confidence-based selection"""
-    if not os.path.exists(image_path):
-        print(f"[ERROR] Image file does not exist: {image_path}")
-        return ""
+def parse_lab_test_line(text):
+    """
+    Enhanced parsing of a cleaned lab test line into structured data.
+    Returns a dict with test_name, value, unit, ref_range, flag if found.
+    """
+    if not text or len(text.strip()) < 5:
+        return None
     
-    results = []
-    
-    # Try PaddleOCR with multi-scale
-    if PADDLEOCR_AVAILABLE and ocr_model is not None:
-        try:
-            result = extract_text_multiscale(image_path)
-            if result.strip():
-                word_count = len(result.split())
-                medical_terms = count_medical_terms(result)
-                results.append(("PaddleOCR", result, word_count, medical_terms))
-                print(f"[INFO] PaddleOCR extracted {word_count} words, {medical_terms} medical terms")
-        except Exception as e:
-            print(f"[ERROR] PaddleOCR failed: {e}")
-    
-    # Try Tesseract fallback
-    if TESSERACT_AVAILABLE:
-        try:
-            result = extract_text_with_tesseract(image_path)
-            if result.strip():
-                word_count = len(result.split())
-                medical_terms = count_medical_terms(result)
-                results.append(("Tesseract", result, word_count, medical_terms))
-                print(f"[INFO] Tesseract extracted {word_count} words, {medical_terms} medical terms")
-        except Exception as e:
-            print(f"[ERROR] Tesseract failed: {e}")
-    
-    # Select best result based on word count and medical terms
-    if results:
-        # Prefer result with more words and medical terms
-        best_result = max(results, key=lambda x: x[2] + x[3] * 2)  # Weight medical terms more
-        print(f"[INFO] Selected {best_result[0]} result with {best_result[2]} words and {best_result[3]} medical terms")
-        return best_result[1]
-    
-    # Final fallback
-    fallback_result = extract_text_simple_fallback(image_path)
-    if fallback_result:
-        print("[INFO] Using simple fallback OCR")
-        return fallback_result
-    
-    print("[WARNING] No OCR method succeeded")
-    return ""
-
-def extract_text_with_paddleocr(image_path):
-    """Extract text using PaddleOCR with robust error handling"""
-    
-    try:
-        # Read image in color (not grayscale) to avoid PaddleOCR internal errors
-        image = cv2.imread(image_path, cv2.IMREAD_COLOR)
-        if image is None:
-            print(f"[ERROR] cv2 could not read image at path: {image_path}")
-            return ""
-
-        # Convert to grayscale for preprocessing
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Enhanced comprehensive pattern for lab test results
+    # Handles various formats like:
+    # "MCHC 30.5* 31.5-34.5 gm/dl"
+    # "UREA 24.3 19-44 mg/dl"
+    # "SODIUM 138.1 135-145 mmol/l"
+    # "CREATININE, SERUM 0.91 0.7-1.3"
+    patterns = [
+        # Pattern 1: Test Name | Value | Flag | Reference Range | Unit
+        r"(?P<test_name>[a-zA-Z\s,]+?)\s+(?P<value>\d+[\.,]?\d*)\s*(?P<flag>[\*HLN])?\s*(?P<ref_range>\d+[\.,]?\d*\s*[-–]\s*\d+[\.,]?\d*)?\s*(?P<unit>[a-zA-Z/%]+)?",
         
-        # Preprocess the grayscale image for better OCR results
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, binary_image = cv2.threshold(blurred, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        # Pattern 2: Test Name | Value | Reference Range | Unit
+        r"(?P<test_name>[a-zA-Z\s,]+?)\s+(?P<value>\d+[\.,]?\d*)\s+(?P<ref_range>\d+[\.,]?\d*\s*[-–]\s*\d+[\.,]?\d*)\s*(?P<unit>[a-zA-Z/%]+)?",
         
-        # Optional: Add dilation and erotion to improve text readability
-        kernel = np.ones((3, 3), np.uint8)
-        dilated_image = cv2.dilate(binary_image, kernel, iterations=1)
-        eroded_image = cv2.erode(dilated_image, kernel, iterations=1)
-
-        # Convert back to color for PaddleOCR (it expects 3-channel images)
-        color_image = cv2.cvtColor(eroded_image, cv2.COLOR_GRAY2BGR)
-
-        # Use predict method for PaddleOCR 3.0.3
-        result = ocr_model.predict(color_image)
-
-        lines = []
-        print("\n[OCR OUTPUT START]")
-        print(f"OCR Result Type: {type(result)}")
-        print(f"OCR Result Length: {len(result)}")
+        # Pattern 3: Test Name | Value | Unit | Reference Range
+        r"(?P<test_name>[a-zA-Z\s,]+?)\s+(?P<value>\d+[\.,]?\d*)\s*(?P<unit>[a-zA-Z/%]+)\s+(?P<ref_range>\d+[\.,]?\d*\s*[-–]\s*\d+[\.,]?\d*)",
         
-        if not result or len(result) == 0:
-            print("[WARNING] PaddleOCR returned empty result.")
-            return ""
+        # Pattern 4: Simple Test Name | Value
+        r"(?P<test_name>[a-zA-Z\s,]+?)\s+(?P<value>\d+[\.,]?\d*)",
         
-        # Handle PaddleOCR 3.0.3 result structure
-        for page_idx, page_result in enumerate(result):
-            print(f"\nPage {page_idx} Result:")
-            print(f"  Page Result Type: {type(page_result)}")
+        # Pattern 5: Test Name with colon | Value | extras
+        r"(?P<test_name>[a-zA-Z\s,]+?):\s*(?P<value>\d+[\.,]?\d*)\s*(?P<unit>[a-zA-Z/%]+)?\s*(?P<ref_range>\d+[\.,]?\d*\s*[-–]\s*\d+[\.,]?\d*)?",
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            test_name = match.group("test_name").strip() if match.group("test_name") else None
+            value = match.group("value").replace(",", ".") if match.group("value") else None
+            flag = match.group("flag") if match.group("flag") else None
+            ref_range = match.group("ref_range") if match.group("ref_range") else None
+            unit = match.group("unit") if match.group("unit") else None
             
-            # Extract rec_texts from the result
-            if hasattr(page_result, 'rec_texts'):
-                rec_texts = page_result.rec_texts
-                print(f"  Found {len(rec_texts)} text lines")
-                
-                for text_idx, text in enumerate(rec_texts):
-                    if text and len(text.strip()) > 1:
-                        print(f"    [OCR Line {text_idx}] {text}")
-                        lines.append(text.strip())
-            else:
-                print("  No rec_texts found in result")
-                # Try to access as dictionary
-                if isinstance(page_result, dict) and 'rec_texts' in page_result:
-                    rec_texts = page_result['rec_texts']
-                    for text in rec_texts:
-                        if text and len(text.strip()) > 1:
-                            lines.append(text.strip())
+            # Clean up reference range
+            if ref_range:
+                ref_range = ref_range.replace(" ", "").replace(",", ".")
+            
+            # Clean up unit
+            if unit:
+                unit = unit.strip()
+            
+            # Validate test name
+            if test_name and is_valid_test_name(test_name):
+                return {
+                    "test_name": test_name,
+                    "value": value,
+                    "unit": unit,
+                    "ref_range": ref_range,
+                    "flag": flag
+                }
+    
+    return None
 
-        print("[OCR OUTPUT END]\n")
-        print("Extracted OCR Lines:\n", "\n".join(lines))  # Manual print of extracted lines
+def is_valid_test_name(name: str) -> bool:
+    """Enhanced validation for test names."""
+    name = name.strip()
+    
+    # Basic validation
+    if not name or len(name) < 2:
+        return False
+    
+    # Must contain at least one letter
+    if not re.search(r'[a-zA-Z]', name):
+        return False
+    
+    # Reject if all numbers/symbols
+    if all(char in '0123456789.- /' for char in name):
+        return False
+    
+    # Reject common false positives
+    invalid_patterns = [
+        r'^\d+$',  # Only numbers
+        r'^[.\-\s]+$',  # Only punctuation
+        r'^(ul|ml|dl|l|mg|g|ng|pg|mcg|kg|lbs)$',  # Only units
+        r'^(a|an|the|and|or|of|in|on|at|to|for|with|by)$',  # Articles/prepositions
+        r'^(normal|abnormal|high|low|positive|negative)$',  # Result descriptors
+        r'^(page|report|lab|test|result|value|range|reference)$',  # Document terms
+        r'^(date|time|patient|doctor|physician|hospital|clinic)$',  # Header terms
+    ]
+    
+    name_lower = name.lower()
+    for pattern in invalid_patterns:
+        if re.match(pattern, name_lower):
+            return False
+    
+    # Reject very short common words
+    if len(name) <= 3 and name_lower in {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'man', 'new', 'now', 'old', 'see', 'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use'}:
+        return False
+    
+    return True
+
+def extract_structured_lab_data(texts):
+    """
+    Enhanced function that takes a list of OCR text lines, cleans and parses them into structured lab test data.
+    Returns a list of dicts with confidence scores.
+    """
+    results = []
+    for text in texts:
+        cleaned = clean_ocr_text(text)
+        parsed = parse_lab_test_line(cleaned)
+        if parsed:
+            # Calculate confidence score
+            confidence = calculate_confidence(parsed)
+            parsed['confidence'] = confidence
+            parsed['raw_text'] = text
+            parsed['cleaned_text'] = cleaned
+            results.append(parsed)
+    return results
+
+def calculate_confidence(parsed_data: Dict[str, Any]) -> float:
+    """Calculate confidence score for extracted test result."""
+    confidence = 0.0
+    
+    # Base confidence for having test name and value
+    if parsed_data.get('test_name') and parsed_data.get('value'):
+        confidence += 0.4
+    
+    # Additional confidence for complete data
+    if parsed_data.get('unit'):
+        confidence += 0.2
+    if parsed_data.get('ref_range'):
+        confidence += 0.2
+    if parsed_data.get('flag'):
+        confidence += 0.1
+    
+    # Bonus for recognized test names
+    test_name_lower = parsed_data.get('test_name', '').lower()
+    recognized_tests = [
+        'hemoglobin', 'hematocrit', 'rbc', 'wbc', 'platelet', 'mcv', 'mch', 'mchc',
+        'glucose', 'creatinine', 'urea', 'sodium', 'potassium', 'chloride', 'albumin',
+        'cholesterol', 'triglycerides', 'hdl', 'ldl', 'vldl',
+        'alt', 'ast', 'alp', 'bilirubin', 'ggt',
+        'tsh', 't3', 't4', 'ft3', 'ft4',
+        'troponin', 'ck-mb', 'bnp', 'nt-probnp',
+        'hba1c', 'fasting glucose', 'random glucose', 'insulin',
+        'esr', 'crp', 'procalcitonin',
+        'pt', 'ptt', 'inr', 'fibrinogen', 'd-dimer',
+        'protein', 'globulin', 'calcium', 'phosphorus', 'uric acid'
+    ]
+    
+    if any(test in test_name_lower for test in recognized_tests):
+        confidence += 0.1
+    
+    return min(confidence, 1.0)
+
+def split_ocr_text_into_lines(text: str) -> List[str]:
+    """Split OCR text into meaningful lines while preserving test result integrity."""
+    if not text:
+        return []
+    
+    # First, split by newlines
+    lines = text.split('\n')
+    processed_lines = []
+    current_line = ''
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Check if line looks like a complete test result
+        has_value = bool(re.search(r'\d+\.?\d*', line))
+        has_unit = bool(re.search(r'[a-zA-Z/%]+', line))
         
-        return "\n".join(lines)
-        
-    except Exception as e:
-        print(f"[ERROR] Error in extract_text_with_paddleocr: {e}")
-        import traceback
-        traceback.print_exc()
+        if has_value and has_unit:
+            # This might be a complete test result
+            if current_line:
+                processed_lines.append(current_line)
+            current_line = line
+        else:
+            # This might be continuation of previous line
+            current_line = (current_line + ' ' + line).strip()
+    
+    if current_line:
+        processed_lines.append(current_line)
+    
+    return processed_lines
+
+def clean_ocr_text(text: str) -> str:
+    """Enhanced OCR text cleaning with focus on lab report formats."""
+    if not text:
         return ""
+    
+    # Basic cleanup
+    text = re.sub(r'[\r\n]+', '\n', text)
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Fix common OCR errors in lab reports
+    replacements = {
+        r'0(?=\s|$)': 'O',  # Fix zero to O at end of words
+        r'l(?=\d)': '1',    # Fix l to 1 before numbers
+        r'I(?=\d)': '1',    # Fix I to 1 before numbers
+        r'S(?=\d)': '5',    # Fix S to 5 before numbers
+        r'g/di': 'g/dl',    # Fix common unit error
+        r'mg/di': 'mg/dl',  # Fix common unit error
+        r'mlU/L': 'mIU/L',  # Fix common unit error
+        r'mlU/ml': 'mIU/ml',# Fix common unit error
+    }
+    
+    for pattern, replacement in replacements.items():
+        text = re.sub(pattern, replacement, text)
+    
+    # Fix spacing around units
+    text = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', text)  # Add space between number and unit
+    text = re.sub(r'\[([HL])\]', r' [\1]', text)      # Fix spacing around flags
+    
+    return text.strip()
