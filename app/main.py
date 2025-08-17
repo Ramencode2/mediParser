@@ -2,10 +2,19 @@
 
 import os
 import time
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import JSONResponse
-from app.ocr_utils import extract_text_with_easyocr, clean_ocr_text, parse_lab_test_line, extract_structured_lab_data
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from app.ocr_utils import (
+    extract_text_with_easyocr,
+    clean_ocr_text,
+    parse_lab_test_line,
+    extract_structured_lab_data,
+    split_ocr_text_into_lines
+)
+from app.result_formatter import format_result, is_test_out_of_range
 from app.parser import MedicalDocumentParser
+from app.pdf_utils import create_lab_report_pdf, PDF_OUTPUT_DIR
 from fastapi.exceptions import RequestValidationError
 from starlette.requests import Request
 from starlette.status import HTTP_422_UNPROCESSABLE_ENTITY
@@ -28,6 +37,15 @@ else:
 
 app = FastAPI()
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # List of allowed origins (frontend URL)
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
+)
+
 # Initialize both parsers
 parser = MedicalDocumentParser()
 
@@ -45,74 +63,97 @@ except Exception as e:
 CLASS_NAMES = ['Test_Name', 'Test_Value', 'Test_Unit', 'Flag', 'Ref_Range']
 
 @app.post("/extract-lab-tests")
-async def extract_lab_tests(file: UploadFile = File(...)):
-    """Legacy endpoint using direct OCR."""
-    print("Received file:", file.filename, "Content-Type:", file.content_type)
+async def extract_lab_tests(
+    file: UploadFile = File(...),
+    patient_name: str = Form("Patient", description="Name of the patient for the PDF report")
+):
+    """Extract lab test results and generate both JSON and PDF reports."""
+    logger.info(f"Received file: {file.filename}, Content-Type: {file.content_type}")
+    
     if not file.content_type or not file.content_type.startswith("image/"):
-        return JSONResponse(status_code=400, content={"is_success": False, "error": f"Uploaded file must be an image. Received content type: {file.content_type}"})
+        return JSONResponse(
+            status_code=400,
+            content={
+                "is_success": False,
+                "error": f"Uploaded file must be an image. Received content type: {file.content_type}"
+            }
+        )
+    
     try:
         temp_path = f"_temp_{file.filename}"
         with open(temp_path, "wb") as f:
             f.write(await file.read())
             
-        # Try YOLO-based extraction first if available
-        if YOLO_AVAILABLE:
-            try:
-                image = cv2.imread(temp_path)
-                results = model(image)[0]
-                structured_results = process_yolo_results(results, image)
-                if structured_results:
-                    os.remove(temp_path)
-                    return {
-                        "is_success": True,
-                        "data": structured_results
-                    }
-            except Exception as e:
-                logger.warning(f"YOLO extraction failed, falling back to OCR: {str(e)}")
-        
-        # Fallback to direct OCR
-        ocr_start = time.time()
-        recognized_text = extract_text_with_easyocr(temp_path)
-        ocr_time = time.time() - ocr_start
-        os.remove(temp_path)
-
-        # Split OCR text into lines and extract structured data
-        from app.ocr_utils import split_ocr_text_into_lines, extract_structured_lab_data
-        lines = split_ocr_text_into_lines(recognized_text)
-        structured_results = extract_structured_lab_data(lines)
-
-        # Format output as per the first image
-        def format_result(res):
-            # Determine out of range if possible
-            out_of_range = False
-            try:
-                if res.get("ref_range") and res.get("value"):
-                    ref = res["ref_range"].replace(" ", "")
-                    if "-" in ref:
-                        low, high = ref.split("-")
-                        val = float(res["value"])
-                        low = float(low)
-                        high = float(high)
-                        out_of_range = not (low <= val <= high)
-            except Exception:
-                out_of_range = False
+        try:
+            # Try YOLO-based extraction first if available
+            if YOLO_AVAILABLE:
+                try:
+                    image = cv2.imread(temp_path)
+                    results = model(image)[0]
+                    structured_results = process_yolo_results(results, image)
+                    if structured_results:
+                        # Generate PDF report with automatic path generation
+                        pdf_path = create_lab_report_pdf(structured_results, patient_name)
+                        
+                        return {
+                            "is_success": True,
+                            "data": structured_results,
+                            "pdf_path": os.path.basename(pdf_path),  # Only return filename
+                            "pdf_directory": "C:\\Users\\Aditya\\Desktop\\pdf reports"  # Add PDF directory info
+                        }
+                except Exception as e:
+                    logger.warning(f"YOLO extraction failed, falling back to OCR: {str(e)}")
+            
+            # Fallback to direct OCR
+            recognized_text = extract_text_with_easyocr(temp_path)
+            
+            # Process OCR results
+            lines = split_ocr_text_into_lines(recognized_text)
+            structured_results = extract_structured_lab_data(lines)
+            data = [format_result(r) for r in structured_results]
+            
+            # Generate PDF report with automatic path generation
+            pdf_path = create_lab_report_pdf(data, patient_name)
+            
             return {
-                "test_name": res.get("test_name"),
-                "test_value": res.get("value"),
-                "bio_reference_range": res.get("ref_range"),
-                "test_unit": res.get("unit"),
-                "lab_test_out_of_range": out_of_range
+                "is_success": True,
+                "data": data,
+                "pdf_path": os.path.basename(pdf_path)  # Only return filename
             }
-        data = [format_result(r) for r in structured_results]
-        return {
-            "is_success": True,
-            "data": data
-        }
+            
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"is_success": False, "error": str(e)})
+        logger.error(f"Error processing request: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "is_success": False,
+                "error": "Error processing the lab report image"
+            }
+        )
 
+# Add a new endpoint to download the generated PDF
+@app.get("/download-pdf/{pdf_filename}")
+async def download_pdf(pdf_filename: str):
+    """Download a generated PDF report."""
+    # Use the external PDF directory
+    pdf_path = os.path.join("C:\\Users\\Aditya\\Desktop\\pdf reports", pdf_filename)
+    
+    # Validate the path is within the allowed directory
+    if not os.path.normpath(pdf_path).startswith("C:\\Users\\Aditya\\Desktop\\pdf reports"):
+        raise HTTPException(status_code=400, detail="Invalid PDF path")
+        
+    if os.path.exists(pdf_path):
+        return FileResponse(
+            pdf_path,
+            media_type="application/pdf",
+            filename=pdf_filename
+        )
+    raise HTTPException(status_code=404, detail="PDF file not found")
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -135,6 +176,28 @@ async def root():
             "GET /health": "Health check",
             "GET /": "API information"
         }
+    }
+
+def format_result(res):
+    """Format a test result with improved out-of-range detection."""
+    # Get the raw value and any flag
+    test_value = res.get("value", "")
+    flag = res.get("flag", "")
+    
+    # Handle the case where the value might include a flag
+    if isinstance(test_value, str):
+        test_value = test_value.replace('*', '').strip()
+    
+    return {
+        "test_name": res.get("test_name"),
+        "test_value": test_value,
+        "bio_reference_range": res.get("ref_range"),
+        "test_unit": res.get("unit"),
+        "lab_test_out_of_range": is_test_out_of_range(
+            test_value,
+            res.get("ref_range"),
+            flag
+        )
     }
 
 def process_yolo_results(results, image):
@@ -232,12 +295,19 @@ def extract_test_data_from_row(row_detections):
             field_mapping['flag'] = text
     
     if field_mapping.get('test_name') and field_mapping.get('value'):
+        test_value = field_mapping.get('value', '').replace('*', '').strip()
         return {
             "test_name": field_mapping.get('test_name'),
-            "test_value": field_mapping.get('value'),
+            "test_value": test_value,
             "bio_reference_range": field_mapping.get('ref_range'),
             "test_unit": field_mapping.get('unit'),
-            "lab_test_out_of_range": field_mapping.get('flag', '').upper() in ['H', 'L', '*']
+            "lab_test_out_of_range": is_test_out_of_range(
+                test_value,
+                field_mapping.get('ref_range'),
+                field_mapping.get('flag', '')
+            )
         }
     
     return None
+
+
