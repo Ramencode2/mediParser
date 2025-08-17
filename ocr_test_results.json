@@ -1,0 +1,248 @@
+{
+  "basic_results": [
+    {
+      "entry_number": 1,
+      "original_text": "NBHAGWAN DAS Bhagwan Das Hospital Department 0f Lab Sciences ARd' MC-4795 Diagnostics S. No. Patient MR No: MR/25/004852/3116573 Date 16-Apr-2025 PM ISample Receiving Date 16-Apr-2025 11:10 AM Sample Collection Date 16-Apr-2025 11:10AM IPD No. Panel 29802",
+      "cleaned_text": "nbhagwan da5 bhagwan da5 hospital department 0f lab science5 ard mc-4795 diagnostic5 s. no. patient mr no:mr/25/004852/3116573 date 16-apr-2025 pm isample receiving date 16-apr-2025 11:10 am sample collection date 16-apr-2025 11:10am ipd no. panel 29802",
+      "parsed_data": {
+        "test_name": "hospital department",
+        "value": "0",
+        "unit": "f",
+        "ref_range": null,
+        "flag": null
+      }
+    },
+    {
+      "entry_number": 2,
+      "original_text": "MCHC 30.5* 31.5-34.5 gmldl (calculated) KFL (KIDNEY FUNCTION TESL (KFT RETUSERUM BLOOD",
+      "cleaned_text": "mchc 30.5 31.5-34.5 gm/dl calculated kfl kidney function TEST kft SERUM blood",
+      "parsed_data": {
+        "test_name": "mchc",
+        "value": "30.5",
+        "unit": "gm/dl",
+        "ref_range": "31.5-34.5",
+        "flag": null
+      }
+    },
+    {
+      "entry_number": 3,
+      "original_text": "UREA 24.3 19-44 mg/dl",
+      "cleaned_text": "urea 24.3 19-44 mg/dl",
+      "parsed_data": {
+        "test_name": "urea",
+        "value": "24.3",
+        "unit": "mg/dl",
+        "ref_range": "19-44",
+        "flag": null
+      }
+    },
+    {
+      "entry_number": 4,
+      "original_text": "(Urease-GLDH UV Melhod)",
+      "cleaned_text": "urease-gldh uv method",
+      "parsed_data": null
+    },
+    {
+      "entry_number": 5,
+      "original_text": "CREATININE, SERUM 0.91 0.7-1.3 (Jaffe melhod wlo compensalion) 'JRIC ACID 5.25 3.5-7.2 mgldl (Enzymalic pholomelric test with TBHBA)",
+      "cleaned_text": "creatinine serum 0.91 0.7-1.3 jaffe method wlo compensation URIC acid 5.25 3.5-7.2 mg/dl enzymatic pho-metric test with TBHBA",
+      "parsed_data": {
+        "test_name": "creatinine serum",
+        "value": "0.91",
+        "unit": "jaffe",
+        "ref_range": "0.7-1.3",
+        "flag": null
+      }
+    },
+    {
+      "entry_number": 6,
+      "original_text": "SODIUM 138.1 135-145 mmolll (L.S E.direct Method)",
+      "cleaned_text": "sodium 138.1 135-145 mmol/1 1.5 e.direct method",
+      "parsed_data": {
+        "test_name": "sodium",
+        "value": "138.1",
+        "unit": "mmol/",
+        "ref_range": "135-145",
+        "flag": null
+      }
+    },
+    {
+      "entry_number": 7,
+      "original_text": "POTASSIUM 3.40* 3.5-5.5 mmol/l (L.S E.direct Melliod)",
+      "cleaned_text": "potassium 3.40 3.5-5.5 mmol/1 1.5 e.direct method",
+      "parsed_data": {
+        "test_name": "potassium",
+        "value": "3.40",
+        "unit": "mmol/",
+        "ref_range": "3.5-5.5",
+        "flag": null
+      }
+    },
+    {
+      "entry_number": 8,
+      "original_text": "CALCIUM 8.95 8.6-10.3 mgldl (Arsenazo IIl Melhod) INORGANIC PHOSPHORUS 4.05 2.6-4.5 (Molybdale UV Melfiod with endpoint delermination)) TOTAL",
+      "cleaned_text": "calcium 8.95 8.6-10.3 mg/dl arsenazo iil method inorganic phosphoru5 4.05 2.6-4.5 molybdate uv method with endpoint determination-tal",
+      "parsed_data": {
+        "test_name": "calcium",
+        "value": "8.95",
+        "unit": "mg/dl",
+        "ref_range": "8.6-10.3",
+        "flag": null
+      }
+    },
+    {
+      "entry_number": 9,
+      "original_text": "PROTEIN 7.05 6.6-8.8 gmldl (Biuret Meihod)",
+      "cleaned_text": "protein 7.05 6.6-8.8 gm/dl biuret method",
+      "parsed_data": {
+        "test_name": "protein",
+        "value": "7.05",
+        "unit": "gm/dl",
+        "ref_range": "6.6-8.8",
+        "flag": null
+      }
+    },
+    {
+      "entry_number": 10,
+      "original_text": "ALBUMIN, SERUM 4.12 3.5-5.2 gmldl \"omocresol Green)",
+      "cleaned_text": "albumin serum 4.12 3.5-5.2 gm/dl bromocresol green",
+      "parsed_data": {
+        "test_name": "albumin serum",
+        "value": "4.12",
+        "unit": "gm/dl",
+        "ref_range": "3.5-5.2",
+        "flag": null
+      }
+    }
+  ],
+  "enhanced_results": [
+    {
+      "test_name": "NBHAGWAN DA5 Bhagwan Da5 Hospita1 Department",
+      "value": "0",
+      "unit": null,
+      "reference_range": null,
+      "flag": "",
+      "confidence": 0.4,
+      "raw_text": "NBHAGWAN DA5 Bhagwan Da5 Hospita1 Department 0f Lab Science5 ARd' MC-4795 Diagnostic5 S. No. Patient MR No MR/25/004852/3116573 Date 16-Apr-2025 PM ISample Receiving Date 16-Apr-2025 11 10 AM Sample Collection Date 16-Apr-2025 11 10AM IPD No. Pane1 29802 MCHC 30.5* 31.5-34.5 gmld1 calculated KF1 KIDNEY FUNCTION TES1 KFT RETUSERUM BLOOD UREA 24.3 19-44 mg/d1 Urease-GLDH UV Melhod CREATININE, SERUM 0.91 0.7-1.3 Jaffe melhod wlo compensalion 'JRIC ACID 5.25 3.5-7.2 mgld1 Enzymalic pholomelric test with TBHBA SODIUM 138.1 135-145 mmoll1 L.5 E.direct Method POTASSIUM 3.40* 3.5-5.5 mmol/1 L.5 E.direct Melliod CALCIUM 8.95 8.6-10.3 mgld1 Arsenazo II1 Melhod INORGANIC PHOSPHORU5 4.05 2.6-4.5 Molybdale UV Melfiod with endpoint delermination-TA1 PROTEIN 7.05 6.6-8.8 gmld1 Biuret Meihod ALBUMIN, SERUM 4.12 3.5-5.2 gmld1 \"omocreso1 Green GLOBULIN 2.9 2-3.5 gm/d1 Calciilated AG Ratio 1.44 0.8-2.O Calculaled End Of Report #**"
+    }
+  ],
+  "line_results": [
+    {
+      "test_name": "hospital department",
+      "value": "0",
+      "unit": "f",
+      "ref_range": null,
+      "flag": null,
+      "confidence": 0.6000000000000001,
+      "raw_text": "NBHAGWAN DAS Bhagwan Das Hospital Department 0f Lab Sciences ARd' MC-4795 Diagnostics S. No. Patient MR No: MR/25/004852/3116573 Date 16-Apr-2025 PM ISample Receiving Date 16-Apr-2025 11:10 AM Sample Collection Date 16-Apr-2025 11:10AM IPD No. Panel 29802",
+      "cleaned_text": "nbhagwan da5 bhagwan da5 hospital department 0f lab science5 ard mc-4795 diagnostic5 s. no. patient mr no:mr/25/004852/3116573 date 16-apr-2025 pm isample receiving date 16-apr-2025 11:10 am sample collection date 16-apr-2025 11:10am ipd no. panel 29802"
+    },
+    {
+      "test_name": "mchc",
+      "value": "30.5",
+      "unit": "gm/dl",
+      "ref_range": "31.5-34.5",
+      "flag": null,
+      "confidence": 0.9,
+      "raw_text": "MCHC 30.5* 31.5-34.5 gmldl (calculated) KFL (KIDNEY FUNCTION TESL (KFT",
+      "cleaned_text": "mchc 30.5 31.5-34.5 gm/dl calculated kfl kidney function TEST kft"
+    },
+    {
+      "test_name": "urea",
+      "value": "24.3",
+      "unit": "mg/dl",
+      "ref_range": "19-44",
+      "flag": null,
+      "confidence": 0.9,
+      "raw_text": "UREA 24.3 19-44 mg/dl (Urease-GLDH UV Melhod) CREATININE,",
+      "cleaned_text": "urea 24.3 19-44 mg/dl urease-gldh uv method creatinine"
+    },
+    {
+      "test_name": "serum",
+      "value": "0.91",
+      "unit": "jaffe",
+      "ref_range": "0.7-1.3",
+      "flag": null,
+      "confidence": 0.8,
+      "raw_text": "SERUM 0.91 0.7-1.3 (Jaffe melhod wlo compensalion) 'JRIC",
+      "cleaned_text": "serum 0.91 0.7-1.3 jaffe method wlo compensation URIC"
+    },
+    {
+      "test_name": "acid",
+      "value": "5.25",
+      "unit": "mg/dl",
+      "ref_range": "3.5-7.2",
+      "flag": null,
+      "confidence": 0.8,
+      "raw_text": "ACID 5.25 3.5-7.2 mgldl (Enzymalic pholomelric test with TBHBA)",
+      "cleaned_text": "acid 5.25 3.5-7.2 mg/dl enzymatic pho-metric test with TBHBA"
+    },
+    {
+      "test_name": "sodium",
+      "value": "138.1",
+      "unit": "mmol/",
+      "ref_range": "135-145",
+      "flag": null,
+      "confidence": 0.9,
+      "raw_text": "SODIUM 138.1 135-145 mmolll (L.S E.direct Method)",
+      "cleaned_text": "sodium 138.1 135-145 mmol/1 1.5 e.direct method"
+    },
+    {
+      "test_name": "potassium",
+      "value": "3.40",
+      "unit": "mmol/",
+      "ref_range": "3.5-5.5",
+      "flag": null,
+      "confidence": 0.9,
+      "raw_text": "POTASSIUM 3.40* 3.5-5.5 mmol/l (L.S E.direct Melliod)",
+      "cleaned_text": "potassium 3.40 3.5-5.5 mmol/1 1.5 e.direct method"
+    },
+    {
+      "test_name": "calcium",
+      "value": "8.95",
+      "unit": "mg/dl",
+      "ref_range": "8.6-10.3",
+      "flag": null,
+      "confidence": 0.9,
+      "raw_text": "CALCIUM 8.95 8.6-10.3 mgldl (Arsenazo IIl Melhod)",
+      "cleaned_text": "calcium 8.95 8.6-10.3 mg/dl arsenazo iil method"
+    },
+    {
+      "test_name": "protein",
+      "value": "7.05",
+      "unit": "gm/dl",
+      "ref_range": "6.6-8.8",
+      "flag": null,
+      "confidence": 0.9,
+      "raw_text": "PROTEIN 7.05 6.6-8.8 gmldl (Biuret Meihod) ALBUMIN,",
+      "cleaned_text": "protein 7.05 6.6-8.8 gm/dl biuret method albumin"
+    },
+    {
+      "test_name": "serum",
+      "value": "4.12",
+      "unit": "gm/dl",
+      "ref_range": "3.5-5.2",
+      "flag": null,
+      "confidence": 0.8,
+      "raw_text": "SERUM 4.12 3.5-5.2 gmldl \"omocresol Green)",
+      "cleaned_text": "serum 4.12 3.5-5.2 gm/dl bromocresol green"
+    },
+    {
+      "test_name": "globulin",
+      "value": "2.9",
+      "unit": "gm/dl",
+      "ref_range": "2-3.5",
+      "flag": null,
+      "confidence": 0.9,
+      "raw_text": "GLOBULIN 2.9 2-3.5 gm/dl (Calciilated) AG Ratio 1.44 0.8-2.0 (Calculaled) End Of Report #**",
+      "cleaned_text": "globulin 2.9 2-3.5 gm/dl calculated ag ratio 1.44 0.8-2.0 calculaled end of report"
+    }
+  ],
+  "summary": {
+    "basic_successful": 9,
+    "enhanced_count": 1,
+    "line_count": 11,
+    "high_conf_enhanced": 0,
+    "high_conf_line": 10
+  }
+}
